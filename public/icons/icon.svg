@@ -1,0 +1,21 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="512" height="512" viewBox="0 0 512 512">
+  <title>Poster Photos</title>
+  <rect width="512" height="512" fill="#eef2f8"/>
+  <!-- the poster as seen at an angle -->
+  <polygon points="112,88 400,140 372,424 140,380" fill="#101114"/>
+  <!-- title bar and text lines -->
+  <polygon points="144,124 368,164 362,196 148,158" fill="#6aa8ff"/>
+  <g stroke="#9aa4b5" stroke-width="10" stroke-linecap="round">
+    <line x1="152" y1="206" x2="352" y2="240"/>
+    <line x1="150" y1="240" x2="350" y2="274"/>
+    <line x1="148" y1="274" x2="300" y2="300"/>
+  </g>
+  <polygon points="152,318 248,334 244,372 148,356" fill="#6aa8ff" opacity="0.55"/>
+  <!-- the four corner handles -->
+  <g fill="#ffffff" stroke="#1f5fd1" stroke-width="10">
+    <circle cx="112" cy="88" r="22"/>
+    <circle cx="400" cy="140" r="22"/>
+    <circle cx="372" cy="424" r="22"/>
+    <circle cx="140" cy="380" r="22"/>
+  </g>
+</svg>

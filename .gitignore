@@ -218,3 +218,13 @@ __marimo__/
 
 # Streamlit
 .streamlit/secrets.toml
+
+# --- Node / Vite / Playwright / agent artifacts ---
+node_modules/
+.vite/
+coverage/
+playwright-report/
+test-results/
+.DS_Store
+.agents/
+*.tsbuildinfo
