@@ -4,6 +4,7 @@ import { computeOutputSize } from '../../cv/output-size.ts';
 import {
   NO_EDGES_MESSAGE,
   describeOutput,
+  shouldSuggestBrighten,
   fromDetection,
   largePhotoNotice,
   previewScale,
@@ -94,5 +95,13 @@ describe('notices', () => {
     expect(capped.reduced).toBe('Reduced to 16.8 MP for this device');
     const plain = describeOutput(computeOutputSize(q, 'free', { cap: 50_000_000 }));
     expect(plain.reduced).toBeNull();
+  });
+});
+describe('shouldSuggestBrighten', () => {
+  it('suggests Brighten only for very dark photos', () => {
+    expect(shouldSuggestBrighten({ mean: 12, p95: 30 })).toBe(true);
+    expect(shouldSuggestBrighten({ mean: 120, p95: 230 })).toBe(false);
+    expect(shouldSuggestBrighten({ mean: 30, p95: 200 })).toBe(false);
+    expect(shouldSuggestBrighten(null)).toBe(false);
   });
 });

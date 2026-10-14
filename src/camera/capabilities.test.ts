@@ -4,7 +4,16 @@ import { formatResolution, hasGrabFrame, hasImageCapture, mapTapToVideo, readCap
 describe('readCapabilities (AC-7)', () => {
   it('reports nothing for missing or empty capabilities', () => {
     for (const raw of [undefined, null, {}, 'x']) {
-      expect(readCapabilities(raw)).toEqual({ torch: false, zoom: null, tapFocus: false, maxWidth: null, maxHeight: null });
+      expect(readCapabilities(raw)).toEqual({
+        torch: false,
+        zoom: null,
+        tapFocus: false,
+        maxWidth: null,
+        maxHeight: null,
+        exposureModes: [],
+        exposureCompensation: null,
+        whiteBalanceModes: [],
+      });
     }
   });
 
@@ -16,9 +25,29 @@ describe('readCapabilities (AC-7)', () => {
       width: { min: 1, max: 4032 },
       height: { min: 1, max: 3024 },
     });
-    expect(c).toEqual({ torch: true, zoom: { min: 1, max: 8, step: 0.1 }, tapFocus: true, maxWidth: 4032, maxHeight: 3024 });
+    expect(c).toEqual({
+      torch: true,
+      zoom: { min: 1, max: 8, step: 0.1 },
+      tapFocus: true,
+      maxWidth: 4032,
+      maxHeight: 3024,
+      exposureModes: [],
+      exposureCompensation: null,
+      whiteBalanceModes: [],
+    });
   });
 
+  it('reports exposure modes, exposure compensation and white-balance modes only when present', () => {
+    const c = readCapabilities({
+      exposureMode: ['manual', 'continuous'],
+      exposureCompensation: { min: -3, max: 3, step: 0.5 },
+      whiteBalanceMode: ['continuous', 'manual'],
+    });
+    expect(c.exposureModes).toEqual(['manual', 'continuous']);
+    expect(c.exposureCompensation).toEqual({ min: -3, max: 3, step: 0.5 });
+    expect(c.whiteBalanceModes).toEqual(['continuous', 'manual']);
+    expect(readCapabilities({ exposureCompensation: { min: 0, max: 0, step: 1 } }).exposureCompensation).toBeNull();
+  });
   it('does not offer tap-to-focus for continuous-only focus', () => {
     expect(readCapabilities({ focusMode: ['continuous'] }).tapFocus).toBe(false);
   });

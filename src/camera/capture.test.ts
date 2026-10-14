@@ -227,6 +227,72 @@ describe('capture chain (AC-3b, AC-46)', () => {
   });
 });
 
+describe('dark-frame safeguard and reapplyHighRes', () => {
+  const DARK = { mean: 5, p95: 10 };
+  const BRIGHT = { mean: 140, p95: 220 };
+  const BLOB_A = new Blob([new Uint8Array([0xff, 0xd8, 1])], { type: 'image/jpeg' });
+  const BLOB_B = new Blob([new Uint8Array([0xff, 0xd8, 2])], { type: 'image/jpeg' });
+  const sleep = vi.fn(async () => {});
+
+  it('frame grab: a dark first frame then a bright one returns the bright frame, not dark', async () => {
+    const stats = [DARK, DARK, BRIGHT];
+    const measureLuma = vi.fn(async () => stats.shift()!);
+    const h = harness(undefined, { measureLuma, sleep });
+    const out = await captureStill(h.deps);
+    expect(measureLuma).toHaveBeenCalledTimes(3);
+    expect(out.luma).toEqual(BRIGHT);
+    expect(out.dark).toBeUndefined();
+  });
+  it('frame grab: always dark returns dark:true after at most 6 attempts and keeps the brightest', async () => {
+    const seq = [{ mean: 3, p95: 5 }, { mean: 9, p95: 12 }, { mean: 4, p95: 6 }, { mean: 4, p95: 6 }, { mean: 4, p95: 6 }, { mean: 4, p95: 6 }];
+    const measureLuma = vi.fn(async () => seq.shift()!);
+    const h = harness(undefined, { measureLuma, sleep });
+    const out = await captureStill(h.deps);
+    expect(measureLuma).toHaveBeenCalledTimes(6);
+    expect(out.dark).toBe(true);
+    expect(out.luma?.mean).toBe(9);
+  });
+  it('reapplyHighRes:false does not call applyConstraints; the default still does', async () => {
+    const off = harness(undefined, { reapplyHighRes: false });
+    await captureStill(off.deps);
+    expect(off.applyConstraints).not.toHaveBeenCalled();
+    const on = harness(undefined);
+    await captureStill(on.deps);
+    expect(on.applyConstraints).toHaveBeenCalledTimes(1);
+  });
+  it('takePhoto: dark then bright keeps the bright photo', async () => {
+    const photos = [BLOB_A, BLOB_B];
+    const takePhoto = vi.fn(async () => photos.shift()!);
+    const stats = [DARK, BRIGHT];
+    const h = harness(fakeIC({ getPhotoCapabilities: async () => SENSOR, takePhoto }), { measureLuma: async () => stats.shift()!, sleep });
+    const out = await captureStill(h.deps);
+    expect(takePhoto).toHaveBeenCalledTimes(2);
+    expect(out.blob).toBe(BLOB_B);
+    expect(out.dark).toBeUndefined();
+  });
+  it('takePhoto: still dark after the retry returns dark:true; a failing retry keeps the first photo', async () => {
+    const takePhoto = vi.fn(async () => BLOB_A);
+    const h = harness(fakeIC({ takePhoto }), { measureLuma: async () => DARK, sleep });
+    expect(await captureStill(h.deps)).toMatchObject({ source: 'camera-takephoto', dark: true });
+    let n = 0;
+    const flaky = vi.fn(async () => {
+      if (n++ > 0) throw new Error('busy');
+      return BLOB_A;
+    });
+    const h2 = harness(fakeIC({ takePhoto: flaky }), { measureLuma: async () => DARK, sleep });
+    expect(await captureStill(h2.deps)).toMatchObject({ blob: BLOB_A, dark: true });
+  });
+  it('a measureLuma that throws or returns null does not fail the capture', async () => {
+    const throwing = harness(undefined, {
+      measureLuma: async () => {
+        throw new Error('no canvas');
+      },
+    });
+    expect(await captureStill(throwing.deps)).toMatchObject({ source: 'camera-frame', blob: JPEG });
+    const nothing = harness(fakeIC({ takePhoto: async () => JPEG }), { measureLuma: async () => null });
+    expect(await captureStill(nothing.deps)).toMatchObject({ source: 'camera-takephoto', blob: JPEG });
+  });
+});
 describe('probeStillSize (achieved-resolution readout)', () => {
   const track = {} as MediaStreamTrack;
   it('reports the clamped photo size takePhoto will produce', async () => {

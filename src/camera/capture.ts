@@ -1,7 +1,10 @@
 // Still capture chain (design 2.9): takePhoto -> (re-apply high-res constraints) -> grabFrame / video canvas.
 // The file-input fallbacks live in the capture screen. Nothing here throws just because ImageCapture is absent (AC-46a).
+import { decodeRaw, type DecodeResult } from '../app/decode.ts';
 import { CaptureError } from '../app/errors.ts';
 import { log } from '../app/log.ts';
+import { isVeryDark, lumaStats, type LumaStats } from './brightness.ts';
+import { readBlobHeader } from './exif.ts';
 import { pickPhotoSize, type PhotoSizeCaps, type Range } from './photo-size.ts';
 
 export type CaptureSource = 'camera-takephoto' | 'camera-frame';
@@ -12,6 +15,10 @@ export interface CapturedImage {
   /** Known for frame grabs; for takePhoto the real size is read from the blob header (exif.ts). */
   width?: number;
   height?: number;
+  /** Brightness of the accepted frame, when a `measureLuma` was supplied and succeeded. */
+  luma?: LumaStats;
+  /** The best frame we could get is still very dark (see brightness.ts): the caller shows a warning but keeps the photo. */
+  dark?: boolean;
 }
 
 export interface PhotoCapabilitiesLike {
@@ -55,6 +62,67 @@ export interface CaptureDeps {
   torchOn?: boolean;
   /** How long to wait for the video `resize` event after re-applying constraints (default 600 ms). */
   resizeWaitMs?: number;
+  /**
+   * Re-apply the high-resolution constraints before a frame grab (default true). Pass false when the session already raised the
+   * resolution at start: a second reconfigure restarts auto-exposure right before the grab (iOS).
+   */
+  reapplyHighRes?: boolean;
+  /**
+   * Brightness probe for the dark-frame safeguard. Receives the frame source (video element or ImageBitmap) or the takePhoto Blob.
+   * Return null / throw when it cannot measure: the frame is then accepted as it is.
+   */
+  measureLuma?: (source: unknown) => Promise<LumaStats | null>;
+  /** Pause between dark-frame retries (default setTimeout). */
+  sleep?: (ms: number) => Promise<void>;
+}
+
+/** Dark-frame retries: up to 5 more frames, ~200 ms apart (about 1 s), or one more takePhoto after ~400 ms. */
+export const DARK_FRAME_RETRIES = 5;
+export const DARK_FRAME_RETRY_MS = 200;
+export const DARK_STILL_RETRY_MS = 400;
+
+const defaultSleep = (ms: number): Promise<void> => new Promise((r) => setTimeout(r, ms));
+
+async function tryMeasure(deps: CaptureDeps, source: unknown): Promise<LumaStats | undefined> {
+  if (!deps.measureLuma) return undefined;
+  try {
+    return (await deps.measureLuma(source)) ?? undefined;
+  } catch (e) {
+    log.warn('could not measure the frame brightness; accepting the frame as it is', e);
+    return undefined;
+  }
+}
+
+/**
+ * Measures a canvas-drawable source (video, ImageBitmap) or a Blob on a 64x48 canvas. The real `measureLuma` for the capture screen.
+ * Frees the temporary bitmap and canvas.
+ */
+export async function measureSourceLuma(source: unknown, createCanvas: CaptureDeps['createCanvas']): Promise<LumaStats | null> {
+  const W = 64;
+  const H = 48;
+  let decoded: DecodeResult | null = null;
+  let canvas: CaptureCanvasLike | null = null;
+  try {
+    let drawable = source;
+    if (typeof Blob !== 'undefined' && source instanceof Blob) {
+      // the only decoder (app/decode.ts), bounded to a tiny size; the header gives the dimensions so it can resize while decoding
+      const header = await readBlobHeader(source).catch(() => null);
+      const info = header?.width && header.height ? { width: header.width, height: header.height, orientation: header.orientation } : null;
+      decoded = await decodeRaw(source, { maxLongEdge: W, info, label: 'luma' });
+      drawable = decoded.handle.bitmap;
+    }
+    canvas = createCanvas(W, H);
+    const ctx = canvas.getContext('2d') as (CanvasRenderingContext2D & { drawImage(...a: unknown[]): void }) | null;
+    if (!ctx || typeof ctx.getImageData !== 'function') return null;
+    ctx.drawImage(drawable as CanvasImageSource, 0, 0, W, H);
+    return lumaStats(ctx.getImageData(0, 0, W, H).data);
+  } finally {
+    decoded?.handle.close();
+    if (canvas) {
+      canvas.width = 0;
+      canvas.height = 0;
+    }
+  }
 }
 
 const HIGH_RES = { width: { ideal: 4096 }, height: { ideal: 3072 } } as const;
@@ -121,15 +189,8 @@ export function frameSize(w: number, h: number, maxPixels: number): { width: num
   return { width: Math.max(1, Math.floor(w * s)), height: Math.max(1, Math.floor(h * s)) };
 }
 
-async function grabFrame(ctor: CaptureDeps['ImageCaptureCtor'], track: MediaStreamTrack, deps: CaptureDeps): Promise<CapturedImage> {
-  // Re-apply the high-resolution constraints: if we got here because takePhoto failed, the stream is still the small preview.
-  try {
-    await deps.track.applyConstraints(HIGH_RES);
-  } catch (e) {
-    log.warn('could not re-apply high-resolution constraints', e);
-  }
-  await waitForResize(deps.video, deps.resizeWaitMs ?? 600);
-
+/** Draws one frame (video element or ImageBitmap) onto a canvas and encodes it. Always frees the bitmap and the canvas. */
+async function grabOnce(ctor: CaptureDeps['ImageCaptureCtor'], track: MediaStreamTrack, deps: CaptureDeps): Promise<CapturedImage> {
   let canvas: CaptureCanvasLike | null = null;
   let bitmap: ImageBitmap | null = null;
   try {
@@ -152,9 +213,10 @@ async function grabFrame(ctor: CaptureDeps['ImageCaptureCtor'], track: MediaStre
     const ctx = canvas.getContext('2d');
     if (!ctx) throw new CaptureError('frame', 'Capture failed, try again');
     ctx.drawImage(source, 0, 0, width, height);
+    const luma = await tryMeasure(deps, source);
     const blob = await toBlob(canvas, 0.95);
     if (!blob || blob.size === 0) throw new CaptureError('frame', 'Capture failed, try again');
-    return { blob, source: 'camera-frame', width, height };
+    return { blob, source: 'camera-frame', width, height, luma };
   } finally {
     bitmap?.close();
     if (canvas) {
@@ -162,6 +224,35 @@ async function grabFrame(ctor: CaptureDeps['ImageCaptureCtor'], track: MediaStre
       canvas.height = 0;
     }
   }
+}
+
+async function grabFrame(ctor: CaptureDeps['ImageCaptureCtor'], track: MediaStreamTrack, deps: CaptureDeps): Promise<CapturedImage> {
+  // Re-apply the high-resolution constraints: if we got here because takePhoto failed, the stream is still the small preview.
+  // Skipped when the session already raised the resolution at start (a second reconfigure restarts auto-exposure: dark frames).
+  if (deps.reapplyHighRes !== false) {
+    try {
+      await deps.track.applyConstraints(HIGH_RES);
+    } catch (e) {
+      log.warn('could not re-apply high-resolution constraints', e);
+    }
+    await waitForResize(deps.video, deps.resizeWaitMs ?? 600);
+  }
+
+  // Dark-frame safeguard: right after a start or reconfigure the first frames can be near black while auto-exposure converges.
+  // Grab again (bounded) and keep the brightest; if it is still dark it is returned with `dark: true`, never thrown.
+  const sleep = deps.sleep ?? defaultSleep;
+  let best = await grabOnce(ctor, track, deps);
+  for (let i = 0; i < DARK_FRAME_RETRIES && best.luma && isVeryDark(best.luma); i++) {
+    await sleep(DARK_FRAME_RETRY_MS);
+    const next = await grabOnce(ctor, track, deps).catch((e: unknown) => {
+      log.warn('dark-frame retry failed', e);
+      return null;
+    });
+    if (next?.luma && next.luma.mean > best.luma.mean) best = next;
+    else if (!next) break;
+  }
+  if (best.luma && isVeryDark(best.luma)) best.dark = true;
+  return best;
 }
 
 /**
@@ -193,8 +284,25 @@ export async function captureStill(deps: CaptureDeps & { track: MediaStreamTrack
   const ctor = 'ImageCaptureCtor' in deps ? deps.ImageCaptureCtor : defaultCtor();
   if (ctor && hasPrototypeFn(ctor, 'takePhoto')) {
     try {
-      const blob = await takeStill(ctor, deps.track, deps);
-      return { blob, source: 'camera-takephoto' };
+      let blob = await takeStill(ctor, deps.track, deps);
+      let luma = await tryMeasure(deps, blob);
+      if (luma && isVeryDark(luma)) {
+        // one more photo after a short wait, keep the brighter one (a failure of the retry keeps the first photo)
+        await (deps.sleep ?? defaultSleep)(DARK_STILL_RETRY_MS);
+        try {
+          const again = await takeStill(ctor, deps.track, deps);
+          const againLuma = await tryMeasure(deps, again);
+          if (againLuma && againLuma.mean > luma.mean) {
+            blob = again;
+            luma = againLuma;
+          }
+        } catch (e) {
+          log.warn('second takePhoto failed; keeping the first photo', e);
+        }
+      }
+      const out: CapturedImage = { blob, source: 'camera-takephoto', luma };
+      if (luma && isVeryDark(luma)) out.dark = true;
+      return out;
     } catch (e) {
       log.warn('takePhoto failed; falling back to a frame grab', e);
     }

@@ -45,7 +45,7 @@ function rectification(over: Partial<RectificationResult> = {}): RectificationRe
     aspectMode: 'auto',
     aspectUsed: 1.5,
     snappedTo: null,
-    enhance: { autoContrast: false, whiteBalance: false, sharpen: false },
+    enhance: { autoContrast: false, whiteBalance: false, sharpen: false, brighten: false },
     engine: 'js',
     ...over,
   };
@@ -152,7 +152,7 @@ function contract(name: string, make: () => Promise<Store>) {
         corners: QUAD,
         cornersSource: 'manual',
         aspectMode: '4:3',
-        enhance: { autoContrast: true, whiteBalance: false, sharpen: false },
+        enhance: { autoContrast: true, whiteBalance: false, sharpen: false, brighten: false },
         rotation: 90,
       });
       expect(await store.getShot(shotId)).toMatchObject({ corners: QUAD, aspectMode: '4:3', rotation: 90, enhance: { autoContrast: true } });

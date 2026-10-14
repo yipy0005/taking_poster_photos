@@ -18,8 +18,10 @@ export interface EnhanceFlags {
   autoContrast: boolean;
   whiteBalance: boolean;
   sharpen: boolean;
+  /** Records stored before this flag existed have no value: read it as false (`{ ...NO_ENHANCE, ...record.enhance }`). */
+  brighten: boolean;
 }
-export const NO_ENHANCE: Readonly<EnhanceFlags> = { autoContrast: false, whiteBalance: false, sharpen: false };
+export const NO_ENHANCE: Readonly<EnhanceFlags> = { autoContrast: false, whiteBalance: false, sharpen: false, brighten: false };
 
 export interface GridCell {
   rows: number;

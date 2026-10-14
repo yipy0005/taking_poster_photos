@@ -58,7 +58,7 @@ const job = (over: Partial<RenderJob> = {}): RenderJob => ({
   quad: QUAD,
   outW: 2000,
   outH: 1500,
-  enhance: { autoContrast: false, whiteBalance: false, sharpen: false },
+  enhance: { autoContrast: false, whiteBalance: false, sharpen: false, brighten: false },
   ...over,
 });
 

@@ -56,14 +56,33 @@ export interface CameraSession {
   readonly track: MediaStreamTrack;
   readonly capabilities: CameraCapabilities;
   readonly stopped: boolean;
+  /**
+   * True when the stream itself was opened for a still (no ImageCapture: 4096x3072 ideal, raised to the track maximum at start).
+   * The shutter then must not re-apply the resolution constraints: that reconfigures the camera and restarts auto-exposure.
+   */
+  readonly highResRequested: boolean;
   /** Current stream size (preview resolution). */
   size(): { width: number; height: number } | null;
   setTorch(on: boolean): Promise<boolean>;
   setZoom(zoom: number): Promise<boolean>;
   /** Normalised video coordinates (0..1). Resolves true when the camera accepted the request. */
   focusAt(x: number, y: number): Promise<boolean>;
+  /** Exposure compensation in EV, clamped to the track range and snapped to its step. false where unsupported. */
+  setExposureCompensation(ev: number): Promise<boolean>;
+  /** The EV bias applied at start (null when exposure compensation is unsupported or the request failed). */
+  readonly exposureBias: number | null;
   /** Stops every track. Idempotent. */
   stop(): void;
+}
+
+/** White posters and walls are metered to mid-grey by auto-exposure and come out dark; start slightly brighter. */
+export const DEFAULT_EXPOSURE_BIAS_EV = 0.5;
+
+/** Clamps `ev` to the range and snaps it to the step (anchored at min). */
+export function clampExposureCompensation(ev: number, range: { min: number; max: number; step: number }): number {
+  const clamped = Math.min(range.max, Math.max(range.min, ev));
+  const snapped = range.min + Math.round((clamped - range.min) / range.step) * range.step;
+  return Math.min(range.max, Math.max(range.min, Number(snapped.toFixed(4))));
 }
 
 const advanced = (c: Record<string, unknown>): MediaTrackConstraints => ({ advanced: [c] }) as MediaTrackConstraints;
@@ -116,9 +135,45 @@ export async function openCamera(env: CameraEnv = defaultCameraEnv()): Promise<C
     }
   }
 
+  // FIXED BY INSPECTION, UNVERIFIED ON HARDWARE (the fake camera has no auto-exposure): keep auto exposure and white balance
+  // continuous, never set manual exposureTime / iso / brightness / colorTemperature, and bias exposure up a little for bright posters.
+  if (capabilities.exposureModes.includes('continuous')) {
+    try {
+      await track.applyConstraints(advanced({ exposureMode: 'continuous' }));
+    } catch (e) {
+      log.warn('could not set continuous exposure', e);
+    }
+  }
+  if (capabilities.whiteBalanceModes.includes('continuous')) {
+    try {
+      await track.applyConstraints(advanced({ whiteBalanceMode: 'continuous' }));
+    } catch (e) {
+      log.warn('could not set continuous white balance', e);
+    }
+  }
+  let exposureBias: number | null = null;
+  const setExposureCompensation = async (ev: number): Promise<boolean> => {
+    if (!capabilities.exposureCompensation) return false;
+    const value = clampExposureCompensation(ev, capabilities.exposureCompensation);
+    try {
+      await track.applyConstraints(advanced({ exposureCompensation: value }));
+      exposureBias = value;
+      return true;
+    } catch (e) {
+      log.warn('exposure compensation failed', e);
+      return false;
+    }
+  };
+  if (capabilities.exposureCompensation) await setExposureCompensation(DEFAULT_EXPOSURE_BIAS_EV);
+
   let stopped = false;
   return {
     stream,
+    highResRequested: !env.hasImageCapture,
+    get exposureBias() {
+      return exposureBias;
+    },
+    setExposureCompensation,
     track,
     capabilities,
     get stopped() {
@@ -151,7 +206,10 @@ export async function openCamera(env: CameraEnv = defaultCameraEnv()): Promise<C
     async focusAt(x, y) {
       if (!capabilities.tapFocus) return false;
       try {
-        await track.applyConstraints(advanced({ pointsOfInterest: [{ x, y }], focusMode: 'single-shot' }));
+        // The point of interest also drives the exposure metering region: with continuous exposure the tap sets focus and exposure.
+        const c: Record<string, unknown> = { pointsOfInterest: [{ x, y }], focusMode: 'single-shot' };
+        if (capabilities.exposureModes.includes('continuous')) c['exposureMode'] = 'continuous';
+        await track.applyConstraints(advanced(c));
         return true;
       } catch (e) {
         log.warn('tap to focus failed', e);
