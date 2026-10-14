@@ -15,9 +15,24 @@ export interface CameraCapabilities {
   /** Largest stream size the track advertises (used to raise the preview resolution). */
   maxWidth: number | null;
   maxHeight: number | null;
+  /** Advertised `exposureMode` values (e.g. 'continuous'); empty when the browser reports none. */
+  exposureModes: string[];
+  /** EV range for `exposureCompensation`; null where unsupported (not Safari, not every Android camera). */
+  exposureCompensation: NumRange | null;
+  /** Advertised `whiteBalanceMode` values. */
+  whiteBalanceModes: string[];
 }
 
-export const NO_CAPABILITIES: Readonly<CameraCapabilities> = { torch: false, zoom: null, tapFocus: false, maxWidth: null, maxHeight: null };
+export const NO_CAPABILITIES: Readonly<CameraCapabilities> = {
+  torch: false,
+  zoom: null,
+  tapFocus: false,
+  maxWidth: null,
+  maxHeight: null,
+  exposureModes: [],
+  exposureCompensation: null,
+  whiteBalanceModes: [],
+};
 
 /** The achieved resolution below which the native camera is suggested (AC-3, AC-3b). */
 export const NATIVE_HINT_MEGAPIXELS = 8;
@@ -46,9 +61,11 @@ function rangeOf(raw: unknown): NumRange | null {
   return { min: r.min, max: r.max, step: isNum(r.step) && r.step > 0 ? r.step : 0.1 };
 }
 
+const stringList = (raw: unknown): string[] => (Array.isArray(raw) ? raw.filter((v): v is string => typeof v === 'string') : []);
+
 /** Normalises `track.getCapabilities()` (any browser shape) into what the UI needs. Missing data means "not supported". */
 export function readCapabilities(raw: unknown): CameraCapabilities {
-  if (typeof raw !== 'object' || raw === null) return { ...NO_CAPABILITIES };
+  if (typeof raw !== 'object' || raw === null) return { ...NO_CAPABILITIES, exposureModes: [], whiteBalanceModes: [] };
   const c = raw as Record<string, unknown>;
   const focusModes = Array.isArray(c['focusMode']) ? (c['focusMode'] as unknown[]) : [];
   const width = c['width'] as { max?: unknown } | undefined;
@@ -59,6 +76,9 @@ export function readCapabilities(raw: unknown): CameraCapabilities {
     tapFocus: focusModes.includes('single-shot') || focusModes.includes('manual') || 'pointsOfInterest' in c,
     maxWidth: isNum(width?.max) ? width.max : null,
     maxHeight: isNum(height?.max) ? height.max : null,
+    exposureModes: stringList(c['exposureMode']),
+    exposureCompensation: rangeOf(c['exposureCompensation']),
+    whiteBalanceModes: stringList(c['whiteBalanceMode']),
   };
 }
 

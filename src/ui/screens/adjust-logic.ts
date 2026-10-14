@@ -1,5 +1,6 @@
 // Pure helpers of the Adjust screen: coordinate scaling, detection result handling, notices. DOM-free so they are unit-tested.
 import { PREVIEW_LONG_EDGE } from '../../app/config.ts';
+import { isVeryDark, type LumaStats } from '../../camera/brightness.ts';
 import { defaultInsetQuad, isValidQuad, scaleQuad, type Quad } from '../../cv/geometry.ts';
 import type { OutputSize } from '../../cv/output-size.ts';
 import type { CornersSource } from '../../storage/schema.ts';
@@ -85,3 +86,7 @@ export const SMALLER_COPY_NOTICE = 'Rendered at a smaller size to fit this devic
 export function previewTooLarge(strikes: number): boolean {
   return strikes >= PREVIEW_MAX_STRIKES;
 }
+
+export const BRIGHTEN_HINT = 'This photo looks dark. Try Brighten under Enhance.';
+/** The photo is dark enough that the Brighten option is worth suggesting (it is never switched on automatically). */
+export const shouldSuggestBrighten = (stats: LumaStats | null | undefined): boolean => !!stats && isVeryDark(stats);

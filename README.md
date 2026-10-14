@@ -67,9 +67,19 @@ Installed, the app opens full screen and works offline. When a new version is av
 - Stand as square-on as you can. The app corrects perspective, but a photo taken straight on keeps the most detail in the corners.
 - Leave a little margin around the poster so all four corners are in the frame.
 - Avoid the flash on glossy posters; it leaves a hot spot. Step sideways to move reflections off the text.
-- Hold still, tap to focus if your camera supports it, and let the shot settle before pressing the shutter.
+- Hold still, tap the poster to focus and set exposure if your camera supports it, and let the shot settle before pressing the shutter. The shutter stays disabled for a moment after the camera starts so auto-exposure can settle.
 - **On iPhone, use "Native camera" for full resolution.** Safari cannot ask the camera for its largest photo; the live-view capture is limited to video resolution there.
 - For a big or detailed poster, take one overview and then detail shots, and look at each one in the viewer.
+
+### Dark photos
+Not verified on real phone hardware: the steps below come from reading the camera specifications and from tests with a fake camera.
+- **On iPhone, use the Native camera button.** The system camera does its own exposure and HDR; the live-view capture does not.
+- Add light, and avoid shooting with a bright window or lamp behind or next to the poster.
+- Tap the poster to focus and set exposure. A bright white poster can come out grey and dark when the camera meters for mid-grey.
+- Where the camera offers it (mostly Android Chrome), use the Brightness slider on the Capture screen.
+- Give the camera a second after it starts before pressing the shutter.
+- If a photo is very dark, the app still saves it and shows "Photo looks very dark - try the Native camera button or add light". The Adjust screen then suggests **Brighten**.
+- **Brighten** (Adjust screen, under Enhance, off by default) lifts the corrected image only. The original photo is never changed.
 
 ## Browser support
 
@@ -147,12 +157,13 @@ Spike 0 results, recorded while scaffolding (Node v26.10.0, npm 11.19.1, Vite 8.
 - **Half-pixel parity (Spike 0 c, AC-12) with the real WASM in Node.** An identity homography copies the ROI exactly. A 1-pixel checkerboard through a perspective homography differs from the JS warp by a mean of 0.30 gray levels (maximum 2), inside the 1.0 contract. The known projective scene has MAE below 1.5 as for the JS engine.
 - **Detector comparison** on the same synthetic perspective poster: OpenCV corners are within 1.4 px of the truth in 24 ms, the JS detector within 12.5 px in 48 ms (Node, 800x600). Confidence is `areaFraction * solidity` in both.
 - **A race found and fixed.** A background OpenCV detect that finished while Rectify was running terminated the worker under the render (the recycle-after-every-job rule), so the render silently fell back to JS. Workers now count jobs in flight and recycle only when the last one is done; covered by a unit test and by the OpenCV end-to-end test, which checks that the stored shot says `engine: 'opencv'`.
-- **End-to-end tests** (`npm run test:e2e`, Chromium, fake camera device, against `vite preview` of a fresh build on port 4373): `smoke.spec.ts` draws a skewed poster in the page, feeds it through the gallery input, accepts the detected corners, rectifies, zooms, downloads the JPEG, finds the poster in the library, opens Settings, reloads offline after the service worker took control, and audits requests and CSP violations. `opencv.spec.ts` taps Better detection, rectifies with OpenCV, then starts a fresh offline page that loads OpenCV from the runtime cache. CI runs unit tests only (backlog B-3).
+- **End-to-end tests** (`npm run test:e2e`, Chromium, fake camera device, against `vite preview` of a fresh build on port 4373): `smoke.spec.ts` draws a skewed poster in the page, feeds it through the gallery input, accepts the detected corners, rectifies, zooms, downloads the JPEG, finds the poster in the library, opens Settings, reloads offline after the service worker took control, and audits requests and CSP violations. `exposure.spec.ts` checks that the corrected image is not darker than the source with Enhance off, and that Brighten lifts only the corrected image. `shutter.spec.ts` feeds the in-page shutter well-lit and very dark Y4M fake-camera videos, with and without `ImageCapture`, and checks the stored frame and the dark-photo warning. `opencv.spec.ts` taps Better detection, rectifies with OpenCV, then starts a fresh offline page that loads OpenCV from the runtime cache. CI runs unit tests only (backlog B-3).
 ### Browser behaviour
 
 - Safari has no `requestIdleCallback`. All idle work goes through `whenIdle()` (`src/app/idle.ts`), which falls back to `setTimeout`. This is taken from MDN compatibility data and covered by a unit test that deletes `requestIdleCallback`; it was not observed on a real Safari here.
 
 ### Not yet measured (need real devices)
+- Dark-photo handling: the +0.5 EV exposure bias, the continuous exposure and white-balance constraints, tap-to-expose, the start-up wait and the "very dark" thresholds (mean below 45 and 95th percentile below 120) were set from the specifications and have not been verified on real phone hardware. Chromium's fake camera has no auto-exposure, so the end-to-end tests guard the plumbing only.
 - JS engine worker in a real browser: `OffscreenCanvas` ROI reads (`getImageData` after `drawImage` with `imageSmoothingQuality = 'high'`), `convertToBlob` encoding, and cancel latency between tiles.
 
 - iPhone 48 MP photo: decode memory, `MAX_DECODE_PIXELS`, `MAX_SOURCE_PIXELS`, whether `resizeWidth` lowers peak decode memory (A-17).

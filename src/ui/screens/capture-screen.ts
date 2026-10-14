@@ -11,11 +11,13 @@ import {
   mapTapToVideo,
   suggestNativeCamera,
 } from '../../camera/capabilities.ts';
+import { DARK_PHOTO_WARNING } from '../../camera/brightness.ts';
 import { openCamera, mapCameraError, type CameraSession } from '../../camera/camera-session.ts';
-import { captureStill, probeStillSize } from '../../camera/capture.ts';
+import { captureStill, measureSourceLuma, probeStillSize } from '../../camera/capture.ts';
 import { cellRect, gridCellFor, type NormRect } from '../../camera/detail-grid.ts';
 import { orientedDims, readBlobHeader } from '../../camera/exif.ts';
 import { createIngestDeps, ingestImage, type IngestDeps } from '../../camera/ingest.ts';
+import { waitForSettledVideo } from '../../camera/warmup.ts';
 import type { ShotRecord, ShotSource } from '../../storage/schema.ts';
 import { confirmDialog } from '../components/dialog.ts';
 import { createTopbar } from '../components/topbar.ts';
@@ -93,6 +95,10 @@ export const captureScreen: Screen = (root, ctx, route) => {
   const zoomWrap = el('label', { class: 'zoom', attrs: { hidden: true } });
   const zoomInput = el('input', { attrs: { type: 'range', 'aria-label': 'Zoom' } });
   zoomWrap.append(el('span', { text: 'Zoom' }), zoomInput);
+  // exposure compensation: only where the track reports it (Android Chrome on most cameras; not Safari)
+  const brightnessWrap = el('label', { class: 'zoom', attrs: { hidden: true } });
+  const brightnessInput = el('input', { attrs: { type: 'range', 'aria-label': 'Brightness' } });
+  brightnessWrap.append(el('span', { text: 'Brightness' }), brightnessInput);
 
   const gallery = el('input', { class: 'file-input', attrs: { type: 'file', accept: 'image/*', hidden: true, 'aria-hidden': 'true', tabindex: -1 } });
   const nativeInput = el('input', { class: 'file-input', attrs: { type: 'file', accept: 'image/*', capture: 'environment', hidden: true, 'aria-hidden': 'true', tabindex: -1 } });
@@ -104,7 +110,7 @@ export const captureScreen: Screen = (root, ctx, route) => {
   shutter.append(el('span', { class: 'shutter-ring', attrs: { 'aria-hidden': 'true' } }));
   const bar = el('div', { class: 'action-bar capture-actions', attrs: { role: 'group', 'aria-label': 'Capture actions' } }, galleryBtn, nativeBtn, shutter, torchBtn, gridBtn);
 
-  const body = el('div', { class: 'capture-body' }, stage, errorHost, status, nativeHint, guidedPanel, zoomWrap);
+  const body = el('div', { class: 'capture-body' }, stage, errorHost, status, nativeHint, guidedPanel, zoomWrap, brightnessWrap);
   root.replaceChildren(topbar, el('div', { class: 'capture-layout screen-with-rail' }, body, bar), gallery, nativeInput);
 
   // ---- readout and hints ----
@@ -240,7 +246,7 @@ export const captureScreen: Screen = (root, ctx, route) => {
   }
 
   // ---- submit (shared by the shutter and both file inputs) ----
-  async function submit(blob: Blob, source: ShotSource): Promise<void> {
+  async function submit(blob: Blob, source: ShotSource, dark = false): Promise<void> {
     status.textContent = 'Saving photo...';
     try {
       const detail = mode === 'detail' && posterId !== undefined;
@@ -251,6 +257,8 @@ export const captureScreen: Screen = (root, ctx, route) => {
         return; // the user discarded a photo above the hard limit
       }
       if (res.notice) ctx.toast.show(res.notice, { kind: 'info', timeoutMs: 7000 });
+      // the photo is saved either way; the warning survives the navigation to Adjust
+      if (dark) ctx.toast.show(DARK_PHOTO_WARNING, { kind: 'warn', timeoutMs: 8000 });
       ctx.router.navigate({ name: 'adjust', id: res.shotId });
     } catch (e) {
       status.textContent = '';
@@ -276,6 +284,13 @@ export const captureScreen: Screen = (root, ctx, route) => {
   gallery.addEventListener('change', () => void pickFile(gallery, 'file-gallery'));
   nativeInput.addEventListener('change', () => void pickFile(nativeInput, 'file-capture'));
 
+  const makeCanvas = (w: number, h: number): HTMLCanvasElement => {
+    const c = document.createElement('canvas');
+    c.width = w;
+    c.height = h;
+    return c;
+  };
+
   async function shoot(): Promise<void> {
     if (!session || busy) return;
     busy = true;
@@ -285,15 +300,13 @@ export const captureScreen: Screen = (root, ctx, route) => {
       const shot = await captureStill({
         track: session.track,
         video,
-        createCanvas: (w, h) => {
-          const c = document.createElement('canvas');
-          c.width = w;
-          c.height = h;
-          return c;
-        },
+        createCanvas: makeCanvas,
         maxSourcePixels: getMaxSourcePixels(),
         maxOutputPixels: getMaxOutputPixels(),
         torchOn,
+        // when the session already asked for the full-size stream, a second reconfigure would restart auto-exposure (dark frames)
+        reapplyHighRes: !session.highResRequested,
+        measureLuma: (source) => measureSourceLuma(source, makeCanvas),
       });
       // The real size of the blob replaces the stream resolution in the readout (design 2.9 overlay).
       try {
@@ -305,7 +318,7 @@ export const captureScreen: Screen = (root, ctx, route) => {
       } catch {
         // the readout simply keeps its previous value
       }
-      await submit(shot.blob, shot.source);
+      await submit(shot.blob, shot.source, shot.dark === true);
     } catch (e) {
       status.textContent = '';
       if (e instanceof CaptureError) ctx.toast.show('Capture failed, try again', { kind: 'error' });
@@ -332,6 +345,7 @@ export const captureScreen: Screen = (root, ctx, route) => {
     errorShown = true;
     stage.hidden = true;
     zoomWrap.hidden = true;
+    brightnessWrap.hidden = true;
     torchBtn.hidden = true;
     resolutionChip.hidden = true;
     nativeHint.hidden = true;
@@ -369,6 +383,13 @@ export const captureScreen: Screen = (root, ctx, route) => {
       zoomInput.step = String(caps.zoom.step);
       zoomInput.value = String(caps.zoom.min);
     }
+    brightnessWrap.hidden = !caps.exposureCompensation;
+    if (caps.exposureCompensation) {
+      brightnessInput.min = String(caps.exposureCompensation.min);
+      brightnessInput.max = String(caps.exposureCompensation.max);
+      brightnessInput.step = String(caps.exposureCompensation.step);
+      brightnessInput.value = String(s.exposureBias ?? 0);
+    }
   }
 
   async function startCamera(): Promise<void> {
@@ -386,10 +407,14 @@ export const captureScreen: Screen = (root, ctx, route) => {
       video.srcObject = s.stream;
       await video.play().catch((e: unknown) => log.warn('video.play() was rejected', e));
       if (disposed || my !== startToken) return;
-      status.textContent = '';
       buildControls(s);
-      shutter.disabled = busy;
       updateReadout();
+      // Auto-exposure needs a few frames to converge; the first ones are dark (often black on iOS). Keep the shutter off until then.
+      status.textContent = 'Getting ready...';
+      await waitForSettledVideo(video);
+      if (disposed || my !== startToken) return;
+      status.textContent = s.capabilities.tapFocus ? 'Tap the poster to focus and set exposure' : '';
+      shutter.disabled = busy;
       // With ImageCapture the still is larger than the preview: show the size takePhoto will produce.
       if (hasImageCapture()) {
         const size = await probeStillSize(s.track, getMaxSourcePixels());
@@ -416,6 +441,7 @@ export const captureScreen: Screen = (root, ctx, route) => {
   }
 
   zoomInput.addEventListener('input', () => void session?.setZoom(Number(zoomInput.value)));
+  brightnessInput.addEventListener('input', () => void session?.setExposureCompensation(Number(brightnessInput.value)));
 
   // tap-to-focus: only where the track reports it; no feedback otherwise
   stage.addEventListener('pointerup', (ev) => {

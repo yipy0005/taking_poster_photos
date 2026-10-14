@@ -15,6 +15,7 @@ import {
 } from '../../app/errors.ts';
 import { log } from '../../app/log.ts';
 import { routeToHash } from '../../app/router.ts';
+import { lumaStats } from '../../camera/brightness.ts';
 import { bitmapToRaster } from '../../camera/encode.ts';
 import { shotImageInfo } from '../../camera/exif.ts';
 import { createIngestDeps, ensureDims, makeThumb, setThumbFromBitmap, thumbFromBlob } from '../../camera/ingest.ts';
@@ -23,7 +24,7 @@ import { NO_MEMORY_MESSAGE } from '../../cv/engine-client.ts';
 import { isCvCached } from '../../cv/opencv/warm-cache.ts';
 import { defaultInsetQuad, validateQuad, type AspectMode, type Quad } from '../../cv/geometry.ts';
 import { computeOutputSize, scaleOutputSize, type OutputSize } from '../../cv/output-size.ts';
-import type { EnhanceFlags, ShotRecord } from '../../storage/schema.ts';
+import { NO_ENHANCE, type EnhanceFlags, type ShotRecord } from '../../storage/schema.ts';
 import { createAspectPicker } from '../components/aspect-picker.ts';
 import { createCornerEditor, type CornerEditor, type DragState } from '../components/corner-editor.ts';
 import { confirmDialog } from '../components/dialog.ts';
@@ -33,6 +34,7 @@ import { createTopbar } from '../components/topbar.ts';
 import { button, el } from '../dom.ts';
 import type { Screen } from '../context.ts';
 import {
+  BRIGHTEN_HINT,
   PREVIEW_TOO_LARGE_MESSAGE,
   REDUCED_COPY_NOTICE,
   describeOutput,
@@ -40,6 +42,7 @@ import {
   largePhotoNotice,
   previewScale,
   previewTooLarge,
+  shouldSuggestBrighten,
   toOriginal,
   toPreview,
   validatorFor,
@@ -66,7 +69,7 @@ export const adjustScreen: Screen = (root, ctx, route) => {
   let editor: CornerEditor | null = null;
   let loupe: Loupe | null = null;
   let aspectMode: AspectMode = 'auto';
-  let enhance: EnhanceFlags = { autoContrast: false, whiteBalance: false, sharpen: false };
+  let enhance: EnhanceFlags = { ...NO_ENHANCE };
   let cornersSource: ShotRecord['cornersSource'] = 'default';
   let displayW = 0;
   let displayH = 0;
@@ -445,7 +448,7 @@ export const adjustScreen: Screen = (root, ctx, route) => {
     }
     shot = record;
     aspectMode = record.aspectMode;
-    enhance = { ...record.enhance };
+    enhance = { ...NO_ENHANCE, ...record.enhance }; // stored records may predate `brighten`
     picker.setMode(aspectMode);
 
     // Strike count of the preview group decides the "too large to preview" message (design 2.7 item 9).
@@ -482,6 +485,12 @@ export const adjustScreen: Screen = (root, ctx, route) => {
 
     const large = largePhotoNotice({ oversize: record.oversize, origW: record.width, origH: record.height, previewW: res.width, previewH: res.height });
     if (large) addNotice(large);
+    // A very dark photo: suggest Brighten (never switched on for the user)
+    try {
+      if (shouldSuggestBrighten(lumaStats(bitmapToRaster(res.handle.bitmap, 64).data))) addNotice(BRIGHTEN_HINT, 'warn');
+    } catch (e) {
+      log.warn('could not measure the photo brightness', e);
+    }
     if (previewTooLarge(previewStrikes)) addNotice(`${PREVIEW_TOO_LARGE_MESSAGE}. You can keep the original as it is.`, 'warn');
 
     const stored = record.corners;
@@ -539,6 +548,7 @@ export const adjustScreen: Screen = (root, ctx, route) => {
       { key: 'autoContrast', label: 'Auto contrast' },
       { key: 'whiteBalance', label: 'White balance' },
       { key: 'sharpen', label: 'Mild sharpen' },
+      { key: 'brighten', label: 'Brighten' },
     ];
     return defs.map((d) => {
       const input = el('input', { attrs: { type: 'checkbox', checked: enhance[d.key] } });

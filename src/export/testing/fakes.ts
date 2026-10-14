@@ -31,7 +31,7 @@ export function makeShot(over: Partial<ShotRecord> = {}): ShotRecord {
     aspectMode: 'auto',
     aspectUsed: null,
     snappedTo: null,
-    enhance: { autoContrast: false, whiteBalance: false, sharpen: false },
+    enhance: { autoContrast: false, whiteBalance: false, sharpen: false, brighten: false },
     rotation: 0,
     rectifiedWidth: 3000,
     rectifiedHeight: 2000,

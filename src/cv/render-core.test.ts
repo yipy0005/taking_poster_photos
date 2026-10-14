@@ -127,7 +127,7 @@ describe('enhancements (AC-17)', () => {
     const a = createMemoryIO(scene.source);
     await renderCore(request(), deps(a));
     const b = createMemoryIO(scene.source);
-    await renderCore(request({ enhance: { autoContrast: false, whiteBalance: false, sharpen: false } }), deps(b));
+    await renderCore(request({ enhance: { autoContrast: false, whiteBalance: false, sharpen: false, brighten: false } }), deps(b));
     expect(Array.from(surfaceRaster(a).data)).toEqual(Array.from(surfaceRaster(b).data));
   });
   it('turning enhancements on changes the output but never the original blob (hash compared)', async () => {
@@ -135,7 +135,7 @@ describe('enhancements (AC-17)', () => {
     const plain = createMemoryIO(scene.source);
     await renderCore(request(), deps(plain));
     const enhanced = createMemoryIO(scene.source);
-    await renderCore(request({ enhance: { autoContrast: true, whiteBalance: true, sharpen: true } }), deps(enhanced));
+    await renderCore(request({ enhance: { autoContrast: true, whiteBalance: true, sharpen: true, brighten: false } }), deps(enhanced));
     expect(await sha(original)).toBe(before);
     expect(Array.from(surfaceRaster(enhanced).data)).not.toEqual(Array.from(surfaceRaster(plain).data));
     // auto-contrast widened the range
@@ -143,7 +143,7 @@ describe('enhancements (AC-17)', () => {
     expect(range(surfaceRaster(enhanced).data)).toBeGreaterThan(range(surfaceRaster(plain).data));
   });
   it('sharpen renders halo tiles that are cropped away: no seams at tile borders', async () => {
-    const sharpenOnly = { autoContrast: false, whiteBalance: false, sharpen: true };
+    const sharpenOnly = { autoContrast: false, whiteBalance: false, sharpen: true, brighten: false };
     const small = createMemoryIO(scene.source);
     await renderCore(request({ enhance: sharpenOnly }), deps(small, { env: { maxOutputPixels: 16_777_216, roiBudget: 20_000 } }));
     const big = createMemoryIO(scene.source);

@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from 'vitest';
 import { CameraError } from '../app/errors.ts';
-import { buildVideoConstraints, mapCameraError, openCamera, type CameraEnv } from './camera-session.ts';
+import { buildVideoConstraints, clampExposureCompensation, mapCameraError, openCamera, type CameraEnv } from './camera-session.ts';
 
 function fakeTrack(opts: { settings?: MediaTrackSettings; caps?: unknown; applyFails?: boolean } = {}) {
   const applied: MediaTrackConstraints[] = [];
@@ -121,6 +121,55 @@ describe('openCamera', () => {
     ]);
   });
 
+  it('applies continuous exposure / white balance only when advertised, and never sets manual exposure values', async () => {
+    const none = fakeTrack({ caps: { exposureMode: ['manual'], whiteBalanceMode: ['manual'] } });
+    await openCamera(env(async () => fakeStream(none.track), { hasImageCapture: true }));
+    expect(none.applied).toEqual([]);
+    const rich = fakeTrack({ caps: { exposureMode: ['manual', 'continuous'], whiteBalanceMode: ['continuous'] } });
+    await openCamera(env(async () => fakeStream(rich.track), { hasImageCapture: true }));
+    expect(rich.applied).toEqual([{ advanced: [{ exposureMode: 'continuous' }] }, { advanced: [{ whiteBalanceMode: 'continuous' }] }]);
+    const keys = rich.applied.flatMap((c) => Object.keys((c.advanced?.[0] ?? {}) as object));
+    expect(keys).not.toContain('exposureTime');
+    expect(keys).not.toContain('iso');
+    expect(keys).not.toContain('brightness');
+  });
+  it('applies a clamped +0.5 EV bias once, only where exposure compensation is supported', async () => {
+    const plain = fakeTrack();
+    const s0 = await openCamera(env(async () => fakeStream(plain.track), { hasImageCapture: true }));
+    expect(plain.applied).toEqual([]);
+    expect(s0.exposureBias).toBeNull();
+    expect(await s0.setExposureCompensation(1)).toBe(false);
+    const wide = fakeTrack({ caps: { exposureCompensation: { min: -2, max: 2, step: 0.25 } } });
+    const s1 = await openCamera(env(async () => fakeStream(wide.track), { hasImageCapture: true }));
+    expect(wide.applied).toEqual([{ advanced: [{ exposureCompensation: 0.5 }] }]);
+    expect(s1.exposureBias).toBe(0.5);
+    expect(await s1.setExposureCompensation(9)).toBe(true);
+    expect(wide.applied[1]).toEqual({ advanced: [{ exposureCompensation: 2 }] });
+    const narrow = fakeTrack({ caps: { exposureCompensation: { min: -0.25, max: 0.25, step: 0.25 } } });
+    const s2 = await openCamera(env(async () => fakeStream(narrow.track), { hasImageCapture: true }));
+    expect(s2.exposureBias).toBe(0.25);
+  });
+  it('swallows exposure failures', async () => {
+    const t = fakeTrack({
+      caps: { exposureMode: ['continuous'], whiteBalanceMode: ['continuous'], exposureCompensation: { min: -2, max: 2, step: 0.5 } },
+      applyFails: true,
+    });
+    const s = await openCamera(env(async () => fakeStream(t.track), { hasImageCapture: true }));
+    expect(s.exposureBias).toBeNull();
+    expect(await s.setExposureCompensation(1)).toBe(false);
+  });
+  it('tap to focus also meters exposure when continuous exposure is advertised', async () => {
+    const t = fakeTrack({ caps: { focusMode: ['single-shot'], exposureMode: ['continuous'] } });
+    const s = await openCamera(env(async () => fakeStream(t.track), { hasImageCapture: true }));
+    await s.focusAt(0.5, 0.5);
+    expect(t.applied.at(-1)).toEqual({ advanced: [{ pointsOfInterest: [{ x: 0.5, y: 0.5 }], focusMode: 'single-shot', exposureMode: 'continuous' }] });
+  });
+  it('highResRequested is true only on the no-ImageCapture path', async () => {
+    const a = fakeTrack();
+    expect((await openCamera(env(async () => fakeStream(a.track), { hasImageCapture: false }))).highResRequested).toBe(true);
+    const b = fakeTrack();
+    expect((await openCamera(env(async () => fakeStream(b.track), { hasImageCapture: true }))).highResRequested).toBe(false);
+  });
   it('stops every track once, idempotently', async () => {
     const { track } = fakeTrack();
     const s = await openCamera(env(async () => fakeStream(track)));
@@ -132,5 +181,13 @@ describe('openCamera', () => {
 
   it('closes the stream when it has no video track', async () => {
     await expect(openCamera(env(async () => fakeStream(null)))).rejects.toMatchObject({ kind: 'none' });
+  });
+});
+describe('clampExposureCompensation', () => {
+  it('clamps and snaps to the step', () => {
+    const r = { min: -2, max: 2, step: 0.5 };
+    expect(clampExposureCompensation(0.6, r)).toBe(0.5);
+    expect(clampExposureCompensation(5, r)).toBe(2);
+    expect(clampExposureCompensation(-5, r)).toBe(-2);
   });
 });

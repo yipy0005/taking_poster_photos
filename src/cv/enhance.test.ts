@@ -55,6 +55,49 @@ describe('white balance (gray world)', () => {
   });
 });
 
+describe('brighten', () => {
+  const meanOf = (r: Raster): number => {
+    let sum = 0;
+    for (let i = 0; i < r.data.length; i += 4) sum += 0.299 * r.data[i]! + 0.587 * r.data[i + 1]! + 0.114 * r.data[i + 2]!;
+    return sum / (r.data.length / 4);
+  };
+  const ramp = (lo: number, hi: number): Raster =>
+    filled(100, 10, (x) => {
+      const v = Math.round(lo + (x / 99) * (hi - lo));
+      return [v, v, v];
+    });
+  it('counts as an LUT enhancement', () => {
+    expect(hasEnhancement({ ...NO_ENHANCEMENT, brighten: true })).toBe(true);
+    expect(computeLuts(createRaster(2, 2), { ...NO_ENHANCEMENT, brighten: true })).not.toBeNull();
+  });
+  it('lifts a dark sample (mean ~40) to roughly mid-grey', () => {
+    const img = ramp(10, 70);
+    const before = meanOf(img);
+    const luts = computeLuts(img, { ...NO_ENHANCEMENT, brighten: true })!;
+    const out = cropRaster(img, 0, 0, 100, 10);
+    applyLuts(out, luts);
+    expect(before).toBeLessThan(45);
+    expect(meanOf(out)).toBeGreaterThan(95);
+    expect(meanOf(out)).toBeLessThan(135);
+  });
+  it('leaves a bright sample (mean ~200) as it is', () => {
+    const luts = computeLuts(ramp(150, 250), { ...NO_ENHANCEMENT, brighten: true })!;
+    for (let v = 0; v < 256; v++) expect(Math.abs(luts[0][v]! - v)).toBeLessThanOrEqual(1);
+  });
+  it('never darkens any value, and keeps 0 and 255 fixed', () => {
+    const luts = computeLuts(ramp(10, 70), { ...NO_ENHANCEMENT, brighten: true })!;
+    for (let v = 0; v < 256; v++) expect(luts[1][v]!).toBeGreaterThanOrEqual(v);
+    expect(luts[1][0]).toBe(0);
+    expect(luts[1][255]).toBe(255);
+  });
+  it('is identity-free when off and combines with auto contrast', () => {
+    expect(computeLuts(ramp(10, 70), { ...NO_ENHANCEMENT })).toBeNull();
+    const both = computeLuts(ramp(10, 70), { ...NO_ENHANCEMENT, autoContrast: true, brighten: true })!;
+    const contrastOnly = computeLuts(ramp(10, 70), { ...NO_ENHANCEMENT, autoContrast: true })!;
+    // after the stretch the sample is already near mid-grey: brighten only adds a lift, never lowers
+    for (let v = 0; v < 256; v++) expect(both[0][v]!).toBeGreaterThanOrEqual(contrastOnly[0][v]!);
+  });
+});
 describe('unsharp', () => {
   it('does not change a flat region', () => {
     const img = filled(9, 9, () => [120, 120, 120]);

@@ -504,7 +504,7 @@ describe('thumbnails', () => {
       aspectMode: 'free',
       aspectUsed: null,
       snappedTo: null,
-      enhance: { autoContrast: false, whiteBalance: false, sharpen: false },
+      enhance: { autoContrast: false, whiteBalance: false, sharpen: false, brighten: false },
       engine: 'js',
     };
     await r.store.saveRectification(id, rect);
@@ -541,7 +541,7 @@ describe('thumbnails', () => {
       aspectMode: 'auto',
       aspectUsed: 1.5,
       snappedTo: null,
-      enhance: { autoContrast: false, whiteBalance: false, sharpen: false },
+      enhance: { autoContrast: false, whiteBalance: false, sharpen: false, brighten: false },
     });
     expect((await shotOf(r, id)).status).toBe('rectified');
 

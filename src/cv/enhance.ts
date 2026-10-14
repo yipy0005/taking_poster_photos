@@ -1,4 +1,4 @@
-// Optional enhancements (design 2.6 steps 3-5): global per-channel LUTs (auto-contrast, gray-world white balance) and a
+// Optional enhancements (design 2.6 steps 3-5): global per-channel LUTs (auto-contrast, gray-world white balance, brighten) and a
 // luma-only 3x3 unsharp mask. All off by default; they never touch the stored original. DOM-free.
 import type { Raster } from './geometry.ts';
 
@@ -6,10 +6,12 @@ export interface EnhanceFlags {
   autoContrast: boolean;
   whiteBalance: boolean;
   sharpen: boolean;
+  /** Adaptive gamma lift for dark photos. A bright image is left as it is. Applies to the rectified output only. */
+  brighten: boolean;
 }
-export const NO_ENHANCEMENT: Readonly<EnhanceFlags> = { autoContrast: false, whiteBalance: false, sharpen: false };
-export const hasLutEnhancement = (f: EnhanceFlags): boolean => f.autoContrast || f.whiteBalance;
-export const hasEnhancement = (f: EnhanceFlags): boolean => f.autoContrast || f.whiteBalance || f.sharpen;
+export const NO_ENHANCEMENT: Readonly<EnhanceFlags> = { autoContrast: false, whiteBalance: false, sharpen: false, brighten: false };
+export const hasLutEnhancement = (f: EnhanceFlags): boolean => f.autoContrast || f.whiteBalance || f.brighten === true;
+export const hasEnhancement = (f: EnhanceFlags): boolean => f.autoContrast || f.whiteBalance || f.sharpen || f.brighten === true;
 
 /** Three 256-entry tables (R, G, B). */
 export type Luts = readonly [Uint8ClampedArray, Uint8ClampedArray, Uint8ClampedArray];
@@ -19,6 +21,9 @@ const HIGH_PCT = 0.99;
 const MIN_SPREAD = 8;
 const GAIN_MIN = 0.25;
 const GAIN_MAX = 4;
+/** Brighten aims the mean at mid-grey (0.5) with a gamma no stronger than this (gamma < 1 lifts). */
+const BRIGHTEN_TARGET = 0.5;
+const GAMMA_MIN = 0.4;
 
 function percentile(hist: Uint32Array, total: number, p: number): number {
   const target = total * p;
@@ -46,6 +51,7 @@ export function computeLuts(sample: Raster, flags: EnhanceFlags): Luts | null {
     }
     n++;
   }
+  const mapped = [new Float32Array(256), new Float32Array(256), new Float32Array(256)];
   const luts: Uint8ClampedArray[] = [new Uint8ClampedArray(256), new Uint8ClampedArray(256), new Uint8ClampedArray(256)];
   const mean = n > 0 ? sum.map((s) => s / n) : [128, 128, 128];
   const gray = (mean[0]! + mean[1]! + mean[2]!) / 3;
@@ -62,7 +68,21 @@ export function computeLuts(sample: Raster, flags: EnhanceFlags): Luts | null {
       }
     }
     const span = hi - lo;
-    for (let v = 0; v < 256; v++) luts[c]![v] = Math.round(((v * gain - lo) / span) * 255);
+    for (let v = 0; v < 256; v++) mapped[c]![v] = Math.min(1, Math.max(0, (v * gain - lo) / span));
+  }
+  // Brighten: one gamma for all channels (keeps hue), chosen so the mean luma of the mapped sample moves towards mid-grey.
+  let gamma = 1;
+  if (flags.brighten === true && n > 0) {
+    const chMean = [0, 1, 2].map((c) => {
+      let acc = 0;
+      for (let v = 0; v < 256; v++) acc += hist[c]![v]! * mapped[c]![v]!;
+      return acc / n;
+    });
+    const mean = 0.299 * chMean[0]! + 0.587 * chMean[1]! + 0.114 * chMean[2]!;
+    if (mean < BRIGHTEN_TARGET) gamma = mean <= 0 ? GAMMA_MIN : Math.min(1, Math.max(GAMMA_MIN, Math.log(BRIGHTEN_TARGET) / Math.log(mean)));
+  }
+  for (let c = 0; c < 3; c++) {
+    for (let v = 0; v < 256; v++) luts[c]![v] = Math.round(255 * (gamma === 1 ? mapped[c]![v]! : Math.pow(mapped[c]![v]!, gamma)));
   }
   return [luts[0]!, luts[1]!, luts[2]!];
 }
